@@ -4,9 +4,9 @@
 export type DragElement = HTMLElement | SVGElement;
 
 /**
- This is the MouseLikeEvent extracted from a TouchEvent
+ This is the general event extraced from a MouseEvent or TouchEvent
  */
-export interface MouseLikeEvent {
+export interface DragEvent {
     /**
      * The X coordinate (in pixels) at which the event took place on the page.
      */
@@ -30,10 +30,8 @@ export interface MouseLikeEvent {
     /**
      * The element targeted by the event
      */
-    target: DragElement
+    target: EventTarget
 }
-
-export type DragEvent = MouseEvent | MouseLikeEvent;
 
 /**
  * This interface defines the message format for the `onStart`, `onDrag` and `onDrop` hooks of `DragOptions`.
@@ -181,15 +179,6 @@ export interface DragOptions<TElement extends DragElement = HTMLElement, TItemVa
      * moving targets, for example in a drag-and-drop list or tree.
      */
     deferTargeting?: number
-
-    /**
-     * Whether to set up a listener for touch events, or mouse events
-     *
-     * A value of true means that the listener will be for touch events
-     * A false value (default) will listen for mouse events.
-     * To listen for both types of events, invoke twice, with different options.
-     */
-     touch?: boolean
 }
 
 export interface TargetCoords {
@@ -240,31 +229,41 @@ function sameValue<TElement, TValue>(el: TElement): TValue {
 }
 
 /**
- * Extract a usable mouse-like event from a touch event.
- * Only expects a single finger to be used for the touch event.
+ * Create a drag event from a touch event and one touch.
  */
-function eventFromTouch(event: TouchEvent):MouseLikeEvent {
-    if (!event || !event.changedTouches || event.changedTouches.length !== 1) {
-        return undefined;
-    }
+function _dragEventFromTouch(event:TouchEvent, touch:Touch):DragEvent {
     function ClonedEvent() {};
-    var clone = new ClonedEvent();
-    for (var property in event) {
-        var descriptor = Object.getOwnPropertyDescriptor(event, property);
+    const clone = new ClonedEvent();
+    for (let property in event) {
+        const descriptor = Object.getOwnPropertyDescriptor(event, property);
         if (descriptor && (descriptor.get || descriptor.set)) {
             Object.defineProperty(clone, property, descriptor);
         } else {
             clone[property] = event[property];
         }
     }
-    var touch = event.changedTouches[0];
     clone.pageX = touch.pageX;
     clone.pageY = touch.pageY;
     clone.target = document.elementFromPoint(clone.pageX, clone.pageY);
-    Object.setPrototypeOf(clone, event);
     return clone;
-};
+}
 
+/**
+ * Extract one or more drag events event from a mouse or touch event.
+ */
+function getDragEvents(event: MouseEvent|TouchEvent):DragEvent[] {
+    const events = [];
+    if (!('changedTouches' in event)) {
+        // Not a touch event, so already in the correct format.
+        events.push(<MouseEvent>event);
+    } else {
+        for (var i=0; i < (<TouchEvent>event).changedTouches.length; i++) {
+            const touch = (<TouchEvent>event).changedTouches[i];
+            events.push(_dragEventFromTouch(<TouchEvent>event, touch))
+        }
+    }
+    return events;
+};
 
 
 /**
@@ -327,39 +326,30 @@ export function makeListener<TElement extends DragElement = HTMLElement, TItemVa
 
         trigger(onStart, event);
 
-        const onMouseMove = (event: DragEvent) => {
-            trigger(onDrag, event);
+        const onMove = (event: MouseEvent|TouchEvent) => {
+            const dragEvents = getDragEvents(event);
+            dragEvents.forEach((dragEvent) => trigger(onDrag, dragEvent));
         };
 
-        const onTouchMove = (event: TouchEvent) => {
-            onMouseMove(eventFromTouch(event));
+        const onEnd = (event: MouseEvent|TouchEvent) => {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onEnd);
+            document.removeEventListener("touchmove", onMove);
+            document.removeEventListener("touchend", onEnd);
+
+            const dragEvents = getDragEvents(event);
+            dragEvents.forEach((dragEvent) => trigger(onDrop, dragEvent));
         };
 
-        const onMouseUp = (event: DragEvent) => {
-            document.removeEventListener("mousemove", onMouseMove);
-            document.removeEventListener("mouseup", onMouseUp);
-
-            trigger(onDrop, event);
-        };
-
-        const onTouchEnd = (event: TouchEvent) => {
-            document.removeEventListener("touchmove", onTouchMove);
-            document.removeEventListener("touchend", onTouchEnd);
-
-            trigger(onDrop, eventFromTouch(event));
-        };
-
-        if (options.touch) {
-            document.addEventListener("touchmove", onTouchMove);
-            document.addEventListener("touchend", onTouchEnd);
-        } else {
-            document.addEventListener("mousemove", onMouseMove);
-            document.addEventListener("mouseup", onMouseUp);
-        }
+        document.addEventListener("touchmove", onMove);
+        document.addEventListener("touchend", onEnd);
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onEnd);
     };
-    return options.touch
-        ? (event: TouchEvent) => { dragStart(eventFromTouch(event)); }
-        : dragStart;
+    return (event: MouseEvent|TouchEvent) => {
+        const dragEvents = getDragEvents(event);
+        dragEvents.forEach((dragEvent) => dragStart(dragEvent));
+    };
 }
 
 /**
